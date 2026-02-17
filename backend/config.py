@@ -2,8 +2,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    MODEL_NAME: str = "yolo11n.pt"
-    CONFIDENCE_THRESHOLD: float = 0.35
+    MODEL_NAME: str = "yolo26n.pt"
+    CONFIDENCE_THRESHOLD: float = 0.3
     SKIP_FRAMES: int = 3
     MAX_TRACK_DISTANCE: int = 80
     TRAJECTORY_LENGTH: int = 60

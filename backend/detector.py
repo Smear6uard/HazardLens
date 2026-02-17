@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -18,6 +17,7 @@ _COCO_MAP: dict[int, ObjectClass] = {
     0: ObjectClass.PERSON,
     1: ObjectClass.BICYCLE,
     2: ObjectClass.CAR,
+    5: ObjectClass.TRUCK,  # bus → treat as truck/vehicle
     7: ObjectClass.TRUCK,
 }
 
@@ -51,13 +51,18 @@ class YOLODetector(DetectorInterface):
     def detect(self, frame: np.ndarray) -> list[Detection]:
         if not self._available or self._model is None:
             return []
+
         results = self._model(frame, conf=settings.CONFIDENCE_THRESHOLD, verbose=False)
         detections: list[Detection] = []
+
         for r in results:
+            raw_count = len(r.boxes)
+            filtered_count = 0
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 if cls_id not in _COCO_MAP:
                     continue
+                filtered_count += 1
                 obj_class = _COCO_MAP[cls_id]
                 conf = float(box.conf[0])
                 # small random variance for realism
@@ -74,6 +79,15 @@ class YOLODetector(DetectorInterface):
                         ppe_status=ppe,
                     )
                 )
+
+            if raw_count > 0 or filtered_count > 0:
+                logger.info(
+                    "YOLO raw=%d filtered=%d (classes: %s)",
+                    raw_count,
+                    filtered_count,
+                    [f"{d.class_name.value}:{d.confidence:.2f}" for d in detections],
+                )
+
         return detections
 
 

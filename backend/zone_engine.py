@@ -14,13 +14,21 @@ class ZoneEngine:
         self._polygons: dict[str, Polygon] = {}
         # track_id → set of zone_ids that object was in on the previous frame
         self._prev_occupancy: dict[int, set[str]] = {}
+        # frame dimensions for coordinate normalization
+        self._frame_w: int = 1
+        self._frame_h: int = 1
 
     @property
     def zones(self) -> dict[str, ZoneConfig]:
         return dict(self._zones)
 
+    def set_frame_size(self, w: int, h: int) -> None:
+        self._frame_w = w
+        self._frame_h = h
+
     def add_zone(self, zone: ZoneConfig) -> None:
         self._zones[zone.id] = zone
+        # Zone polygon is in normalized coords (0-1)
         self._polygons[zone.id] = Polygon(zone.polygon)
 
     def remove_zone(self, zone_id: str) -> bool:
@@ -42,7 +50,11 @@ class ZoneEngine:
         exits: dict[int, set[str]] = {}
 
         for obj in tracked_objects:
-            pt = Point(obj.centroid[0], obj.centroid[1])
+            # Normalize pixel centroid to 0-1 range to match zone polygon coords
+            nx = obj.centroid[0] / self._frame_w if self._frame_w > 0 else 0
+            ny = obj.centroid[1] / self._frame_h if self._frame_h > 0 else 0
+            pt = Point(nx, ny)
+
             in_zones: set[str] = set()
             for zid, poly in self._polygons.items():
                 if poly.contains(pt):
@@ -68,7 +80,7 @@ class ZoneEngine:
     ) -> list[tuple[int, int, float]]:
         """
         Returns list of (person_track_id, vehicle_track_id, distance) pairs
-        where distance < PROXIMITY_THRESHOLD.
+        where distance < PROXIMITY_THRESHOLD (in pixels).
         """
         persons = [
             o for o in tracked_objects if o.class_name == ObjectClass.PERSON
