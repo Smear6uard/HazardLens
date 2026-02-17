@@ -132,11 +132,15 @@ export default function App() {
   const handleZoneComplete = useCallback(async (zoneData) => {
     setIsDrawing(false);
     try {
-      const created = await createZone({
+      // Map frontend format {type, vertices: [{x,y}]} to backend {zone_type, polygon: [[x,y]]}
+      const payload = {
         name: `Zone ${Date.now().toString(36).slice(-4).toUpperCase()}`,
-        ...zoneData,
-      });
-      setZones((prev) => [...prev, created]);
+        zone_type: zoneData.type,
+        polygon: zoneData.vertices.map((v) => [v.x, v.y]),
+      };
+      await createZone(payload);
+      // Store in frontend format for rendering
+      setZones((prev) => [...prev, { ...payload, id: payload.name, vertices: zoneData.vertices, type: zoneData.type }]);
     } catch {
       // zone creation failed
     }
