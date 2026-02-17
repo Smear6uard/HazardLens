@@ -172,12 +172,13 @@ async def job_stream(job_id: str):
     async def event_generator():
         sent = 0
         event_sent = 0
+        frame_interval = 1.0 / settings.STREAM_FPS
         while True:
             frames = _job_frames.get(job_id, [])
             events = _job_events.get(job_id, [])
 
-            # send new frames
-            while sent < len(frames):
+            # send one frame per tick (paced by STREAM_FPS)
+            if sent < len(frames):
                 fr = frames[sent]
                 data = json.dumps({
                     "frame_number": fr.frame_number,
@@ -189,17 +190,22 @@ async def job_stream(job_id: str):
                 yield f"event: frame\ndata: {data}\n\n"
                 sent += 1
 
-            # send new events
-            while event_sent < len(events):
-                ev = events[event_sent]
-                yield f"event: alert\ndata: {ev.model_dump_json()}\n\n"
-                event_sent += 1
+                # send any events up to this frame
+                while event_sent < len(events) and events[event_sent].frame_number <= fr.frame_number:
+                    ev = events[event_sent]
+                    yield f"event: alert\ndata: {ev.model_dump_json()}\n\n"
+                    event_sent += 1
 
-            if _job_complete.get(job_id):
+            elif _job_complete.get(job_id):
+                # flush remaining events
+                while event_sent < len(events):
+                    ev = events[event_sent]
+                    yield f"event: alert\ndata: {ev.model_dump_json()}\n\n"
+                    event_sent += 1
                 yield "event: complete\ndata: {}\n\n"
                 break
 
-            await asyncio.sleep(1.0 / settings.STREAM_FPS)
+            await asyncio.sleep(frame_interval)
 
     return StreamingResponse(
         event_generator(), media_type="text/event-stream"
