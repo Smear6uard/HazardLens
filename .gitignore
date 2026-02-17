@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pt
+*.db
+venv/
+.env
+dist/
+node_modules/
+build/
+*.mp4
+*.avi
+.DS_Store
+*.egg-info/
+.vite/
