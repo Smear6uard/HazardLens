@@ -132,8 +132,13 @@ export default function VideoPanel({
             Frames: {stats?.frameCount || 0}
           </span>
           <span>FPS: {stats?.fps || 0}</span>
-          {stats?.processingTime > 0 && (
-            <span>Latency: {(stats.processingTime * 1000).toFixed(0)}ms</span>
+          {stats?.trackedObjects > 0 && (
+            <span>Objects: {stats.trackedObjects}</span>
+          )}
+          {stats?.riskScore != null && stats.riskScore > 0 && (
+            <span className={stats.riskScore > 50 ? 'text-red-400' : 'text-safety-green'}>
+              Risk: {Math.round(stats.riskScore)}
+            </span>
           )}
           <span className="ml-auto text-slate-500 capitalize">{mode} mode</span>
         </div>

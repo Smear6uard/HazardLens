@@ -38,23 +38,39 @@ function StatCard({ icon: Icon, label, value, color = 'text-white', sub }) {
 export default function AnalyticsDash({ analytics }) {
   const data = analytics || {};
 
+  // Map backend Analytics model field names to display values
+  // Prefer per-frame risk_score (current) over avg_risk_score (diluted average)
+  const riskScore = data.risk_score ?? data.avg_risk_score ?? 0;
+  const compliancePercent = (data.compliance_rate ?? 1.0) * 100;
+  const totalEvents = data.total_events ?? 0;
+  const criticalEvents = data.critical_events ?? 0;
+
   const complianceData = useMemo(() => {
-    if (!data.compliance_over_time) return [];
-    return data.compliance_over_time.map((v, i) => ({ time: `${i}s`, value: v }));
+    if (!data.compliance_over_time?.length) return [];
+    // Backend sends list of {timestamp, value} TimeSeriesPoint objects
+    return data.compliance_over_time.map((pt, i) => ({
+      time: `${i}`,
+      value: (typeof pt === 'object' ? pt.value : pt) * 100,
+    }));
   }, [data.compliance_over_time]);
 
   const alertsPerMinute = useMemo(() => {
-    if (!data.alerts_per_minute) return [];
-    return data.alerts_per_minute.map((v, i) => ({ time: `${i}m`, count: v }));
+    if (!data.alerts_per_minute?.length) return [];
+    // Backend sends list of {timestamp, value} TimeSeriesPoint objects
+    return data.alerts_per_minute.map((pt, i) => ({
+      time: `${i}m`,
+      count: typeof pt === 'object' ? pt.value : pt,
+    }));
   }, [data.alerts_per_minute]);
 
   const eventDist = useMemo(() => {
-    if (!data.event_distribution) return [];
-    return Object.entries(data.event_distribution).map(([name, value]) => ({
+    // Backend field is event_type_counts (dict), not event_distribution
+    const counts = data.event_type_counts || data.event_distribution || {};
+    return Object.entries(counts).map(([name, value]) => ({
       name: name.replace(/_/g, ' '),
       value,
     }));
-  }, [data.event_distribution]);
+  }, [data.event_type_counts, data.event_distribution]);
 
   return (
     <div className="flex flex-col gap-3 p-3 overflow-y-auto h-full">
@@ -62,39 +78,42 @@ export default function AnalyticsDash({ analytics }) {
       <div className="grid grid-cols-2 gap-2">
         <StatCard
           icon={Users}
-          label="Workers"
-          value={data.total_workers ?? '--'}
+          label="Total Events"
+          value={analytics ? totalEvents : '--'}
           color="text-blue-400"
         />
         <StatCard
           icon={ShieldCheck}
           label="PPE Compliance"
-          value={data.ppe_compliance != null ? `${Math.round(data.ppe_compliance)}%` : '--'}
+          value={analytics ? `${Math.round(compliancePercent)}%` : '--'}
           color="text-safety-green"
         />
         <StatCard
           icon={AlertTriangle}
-          label="Active Alerts"
-          value={data.active_alerts ?? '--'}
+          label="Critical Alerts"
+          value={analytics ? criticalEvents : '--'}
           color="text-safety-orange"
+          sub={totalEvents > 0 ? `of ${totalEvents} total` : undefined}
         />
         <StatCard
           icon={Activity}
           label="Risk Score"
-          value={data.risk_score != null ? Math.round(data.risk_score) : '--'}
+          value={analytics ? Math.round(riskScore) : '--'}
           color={
-            (data.risk_score ?? 0) > 75
+            riskScore > 75
               ? 'text-red-400'
-              : (data.risk_score ?? 0) > 50
+              : riskScore > 50
               ? 'text-safety-orange'
-              : 'text-safety-green'
+              : riskScore > 0
+              ? 'text-safety-green'
+              : 'text-white'
           }
         />
       </div>
 
       {/* Risk gauge */}
       <div className="card p-4">
-        <RiskGauge score={data.risk_score ?? 0} />
+        <RiskGauge score={riskScore} />
       </div>
 
       {/* Compliance over time */}
@@ -140,7 +159,7 @@ export default function AnalyticsDash({ analytics }) {
       {eventDist.length > 0 && (
         <div className="card p-3">
           <h3 className="text-xs font-semibold text-slate-400 mb-2">Event Distribution</h3>
-          <ResponsiveContainer width="100%" height={160}>
+          <ResponsiveContainer width="100%" height={220}>
             <PieChart>
               <Pie
                 data={eventDist}

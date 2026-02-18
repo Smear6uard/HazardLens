@@ -40,6 +40,7 @@ export default function App() {
   const {
     frame: sseFrame,
     alerts: sseAlerts,
+    analytics: sseAnalytics,
     isStreaming: sseStreaming,
     stats: sseStats,
     error: sseError,
@@ -65,7 +66,14 @@ export default function App() {
     async function loadInitial() {
       try {
         const zonesData = await getZones();
-        setZones(zonesData);
+        // Normalize backend format (zone_type, polygon) to frontend format (type, vertices)
+        setZones(zonesData.map(z => ({
+          ...z,
+          type: z.zone_type || z.type || 'restricted',
+          vertices: z.polygon
+            ? z.polygon.map(pt => ({ x: pt[0], y: pt[1] }))
+            : z.vertices || [],
+        })));
       } catch {
         // API not available yet
       }
@@ -73,7 +81,26 @@ export default function App() {
     loadInitial();
   }, []);
 
-  // Poll analytics
+  // Merge SSE analytics with per-frame stats so current risk always shows
+  useEffect(() => {
+    if (sseAnalytics) {
+      setAnalytics(prev => ({
+        ...sseAnalytics,
+        // Override with latest per-frame risk for real-time responsiveness
+        risk_score: sseStats?.riskScore ?? sseAnalytics.avg_risk_score ?? 0,
+        compliance_rate: sseStats?.complianceRate ?? sseAnalytics.compliance_rate ?? 1.0,
+      }));
+    } else if (sseStats?.riskScore != null) {
+      setAnalytics(prev => ({
+        ...prev,
+        risk_score: sseStats.riskScore,
+        avg_risk_score: sseStats.riskScore,
+        compliance_rate: sseStats.complianceRate ?? prev?.compliance_rate ?? 1.0,
+      }));
+    }
+  }, [sseAnalytics, sseStats]);
+
+  // Fallback: poll analytics endpoint when stream is not active
   useEffect(() => {
     let mounted = true;
     async function fetchAnalytics() {
@@ -90,16 +117,17 @@ export default function App() {
       }
     }
 
-    if (isStreaming || mode === 'demo') {
+    // Only poll if not receiving SSE analytics
+    if (!sseAnalytics && (isStreaming || mode === 'demo')) {
       fetchAnalytics();
-      const id = setInterval(fetchAnalytics, 3000);
+      const id = setInterval(fetchAnalytics, 5000);
       return () => {
         mounted = false;
         clearInterval(id);
       };
     }
     return () => { mounted = false; };
-  }, [mode, jobId, isStreaming]);
+  }, [mode, jobId, isStreaming, sseAnalytics]);
 
   // Handle file upload
   const handleFileSelect = useCallback(async (file) => {
@@ -138,9 +166,15 @@ export default function App() {
         zone_type: zoneData.type,
         polygon: zoneData.vertices.map((v) => [v.x, v.y]),
       };
-      await createZone(payload);
-      // Store in frontend format for rendering
-      setZones((prev) => [...prev, { ...payload, id: payload.name, vertices: zoneData.vertices, type: zoneData.type }]);
+      const result = await createZone(payload);
+      // Use the backend-returned ID so delete works
+      const backendId = result.id;
+      setZones((prev) => [...prev, {
+        ...payload,
+        id: backendId,
+        vertices: zoneData.vertices,
+        type: zoneData.type,
+      }]);
     } catch {
       // zone creation failed
     }

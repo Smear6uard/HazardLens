@@ -11,7 +11,6 @@ from typing import Optional
 import cv2
 import numpy as np
 from fastapi import (
-    BackgroundTasks,
     FastAPI,
     HTTPException,
     Query,
@@ -42,10 +41,8 @@ logger = logging.getLogger(__name__)
 
 pipeline = Pipeline()
 
-# in-memory caches for SSE streaming
-_job_frames: dict[str, list[FrameResult]] = {}
-_job_events: dict[str, list[Event]] = {}
-_job_complete: dict[str, bool] = {}
+# Store video file paths for on-the-fly processing during SSE streaming
+_job_paths: dict[str, str] = {}
 
 # demo data cache (lazy-loaded)
 _demo_cache: dict[str, object] = {}
@@ -87,48 +84,10 @@ app.add_middleware(
 )
 
 
-# ── Video upload & processing ─────────────────────────────────────────
-
-async def _process_video_task(job_id: str, video_path: str) -> None:
-    try:
-        await db.update_job(job_id, status="processing")
-        _job_frames[job_id] = []
-        _job_events[job_id] = []
-        _job_complete[job_id] = False
-
-        cap = cv2.VideoCapture(video_path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        await db.update_job(job_id, total_frames=total)
-
-        pipeline.reset()
-
-        def on_frame(result: FrameResult) -> None:
-            _job_frames[job_id].append(result)
-
-        def on_event(event: Event) -> None:
-            _job_events[job_id].append(event)
-
-        analytics = await pipeline.process_video(
-            video_path, job_id=job_id, on_frame=on_frame, on_event=on_event
-        )
-
-        await db.save_analytics(job_id, analytics)
-        for ev in _job_events.get(job_id, []):
-            await db.insert_event(ev)
-
-        await db.update_job(job_id, status="complete", progress=1.0, processed_frames=total)
-        _job_complete[job_id] = True
-        logger.info("Job %s complete: %d frames", job_id, total)
-
-    except Exception as exc:
-        logger.exception("Job %s failed", job_id)
-        await db.update_job(job_id, status="error", error=str(exc))
-        _job_complete[job_id] = True
-
+# ── Video upload ──────────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_video(file: UploadFile, background_tasks: BackgroundTasks):
+async def upload_video(file: UploadFile):
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
@@ -140,10 +99,17 @@ async def upload_video(file: UploadFile, background_tasks: BackgroundTasks):
     with open(save_path, "wb") as f:
         f.write(content)
 
-    await db.create_job(job_id)
-    background_tasks.add_task(_process_video_task, job_id, save_path)
+    # Extract metadata
+    cap = cv2.VideoCapture(save_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
 
-    return {"job_id": job_id, "status": "queued"}
+    await db.create_job(job_id)
+    await db.update_job(job_id, total_frames=total, status="ready")
+    _job_paths[job_id] = save_path
+
+    logger.info("Upload %s: %d frames, saved to %s", job_id, total, save_path)
+    return {"job_id": job_id, "status": "ready"}
 
 
 # ── Job status ────────────────────────────────────────────────────────
@@ -153,62 +119,112 @@ async def job_status(job_id: str):
     job = await db.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    # enrich with live frame count
-    if job_id in _job_frames:
-        job.processed_frames = len(_job_frames[job_id])
-        if job.total_frames > 0:
-            job.progress = job.processed_frames / job.total_frames
     return job
 
 
-# ── SSE stream for video jobs ─────────────────────────────────────────
+# ── SSE stream — processes frames on-the-fly ─────────────────────────
 
 @app.get("/api/jobs/{job_id}/stream")
 async def job_stream(job_id: str):
-    job = await db.get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
+    video_path = _job_paths.get(job_id)
+    if not video_path:
+        job = await db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        raise HTTPException(400, "Video file not available for streaming")
 
     async def event_generator():
-        sent = 0
-        event_sent = 0
-        frame_interval = 1.0 / settings.STREAM_FPS
-        while True:
-            frames = _job_frames.get(job_id, [])
-            events = _job_events.get(job_id, [])
+        # Reset pipeline state (keeps zones intact)
+        pipeline.reset()
+        await db.update_job(job_id, status="processing")
 
-            # send one frame per tick (paced by STREAM_FPS)
-            if sent < len(frames):
-                fr = frames[sent]
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            yield f"event: error\ndata: {json.dumps({'error': 'Cannot open video'})}\n\n"
+            return
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_interval = 1.0 / settings.STREAM_FPS
+        frame_idx = 0
+        all_events: list[Event] = []
+        analytics_interval = 30
+
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_idx += 1
+
+                # Process frame with CURRENT pipeline state (zones, settings)
+                result = await asyncio.to_thread(
+                    pipeline.process_frame, frame, job_id
+                )
+
+                # Stream annotated frame
                 data = json.dumps({
-                    "frame_number": fr.frame_number,
-                    "risk_score": fr.risk_score,
-                    "compliance_rate": fr.compliance_rate,
-                    "tracked_objects": len(fr.tracked_objects),
-                    "annotated_frame_b64": fr.annotated_frame_b64,
+                    "frame_number": result.frame_number,
+                    "risk_score": result.risk_score,
+                    "compliance_rate": result.compliance_rate,
+                    "tracked_objects": len(result.tracked_objects),
+                    "detections": len(result.detections),
+                    "annotated_frame_b64": result.annotated_frame_b64,
                 })
                 yield f"event: frame\ndata: {data}\n\n"
-                sent += 1
 
-                # send any events up to this frame
-                while event_sent < len(events) and events[event_sent].frame_number <= fr.frame_number:
-                    ev = events[event_sent]
+                # Stream events for this frame
+                for ev in result.events:
+                    all_events.append(ev)
                     yield f"event: alert\ndata: {ev.model_dump_json()}\n\n"
-                    event_sent += 1
 
-            elif _job_complete.get(job_id):
-                # flush remaining events
-                while event_sent < len(events):
-                    ev = events[event_sent]
-                    yield f"event: alert\ndata: {ev.model_dump_json()}\n\n"
-                    event_sent += 1
-                yield "event: complete\ndata: {}\n\n"
-                break
+                # Periodic analytics
+                if frame_idx % analytics_interval == 0:
+                    try:
+                        analytics = pipeline.get_analytics()
+                        yield f"event: analytics\ndata: {json.dumps(analytics.model_dump(), default=str)}\n\n"
+                    except Exception:
+                        pass
 
-            await asyncio.sleep(frame_interval)
+                # Pace output to target stream FPS
+                await asyncio.sleep(frame_interval)
+
+            # Final analytics
+            try:
+                analytics = pipeline.get_analytics()
+                yield f"event: analytics\ndata: {json.dumps(analytics.model_dump(), default=str)}\n\n"
+                await db.save_analytics(job_id, analytics)
+            except Exception:
+                pass
+
+            # Save events to DB
+            for ev in all_events:
+                try:
+                    await db.insert_event(ev)
+                except Exception:
+                    pass
+
+            await db.update_job(
+                job_id, status="complete", progress=1.0, processed_frames=frame_idx
+            )
+            yield "event: complete\ndata: {}\n\n"
+            logger.info("Stream %s complete: %d frames", job_id, frame_idx)
+
+        except asyncio.CancelledError:
+            logger.info("SSE stream cancelled for job %s at frame %d", job_id, frame_idx)
+        except Exception as exc:
+            logger.exception("SSE stream error for job %s: %s", job_id, exc)
+            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            cap.release()
 
     return StreamingResponse(
-        event_generator(), media_type="text/event-stream"
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -219,9 +235,10 @@ async def job_analytics(job_id: str):
     analytics = await db.get_analytics(job_id)
     if not analytics:
         # try live analytics from pipeline
-        if _job_frames.get(job_id):
+        try:
             return pipeline.get_analytics()
-        raise HTTPException(404, "Analytics not found")
+        except Exception:
+            raise HTTPException(404, "Analytics not found")
     return analytics
 
 
@@ -312,31 +329,41 @@ async def websocket_live(ws: WebSocket):
 
 @app.get("/api/demo/stream")
 async def demo_stream():
-    frames, events, _ = _get_demo()
+    frames, events, analytics = _get_demo()
 
     async def event_generator():
         event_idx = 0
-        for fr in frames:
+        for i, fr in enumerate(frames):
             data = json.dumps({
                 "frame_number": fr.frame_number,
                 "risk_score": fr.risk_score,
                 "compliance_rate": fr.compliance_rate,
                 "tracked_objects": len(fr.tracked_objects),
+                "detections": len(fr.detections),
                 "annotated_frame_b64": fr.annotated_frame_b64,
             })
             yield f"event: frame\ndata: {data}\n\n"
 
-            # send any events for this frame
             while event_idx < len(events) and events[event_idx].frame_number <= fr.frame_number:
                 yield f"event: alert\ndata: {events[event_idx].model_dump_json()}\n\n"
                 event_idx += 1
 
+            if (i + 1) % 30 == 0:
+                yield f"event: analytics\ndata: {json.dumps(analytics.model_dump(), default=str)}\n\n"
+
             await asyncio.sleep(1.0 / settings.DEMO_FPS)
 
+        yield f"event: analytics\ndata: {json.dumps(analytics.model_dump(), default=str)}\n\n"
         yield "event: complete\ndata: {}\n\n"
 
     return StreamingResponse(
-        event_generator(), media_type="text/event-stream"
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

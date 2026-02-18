@@ -1,11 +1,13 @@
 # HazardLens
 
-**Real-time construction site safety detection powered by YOLO and computer vision.**
+**Real-time construction site safety detection powered by YOLO26 and computer vision.**
 
 HazardLens monitors video feeds from construction sites to detect PPE compliance, hazard zone violations, near-miss incidents, and unsafe worker behavior — then surfaces actionable alerts on a live dashboard.
 
+[**Watch the Demo**](https://github.com/Smear6uard/HazardLens/issues/2)
+
 ```
-Video Input → YOLO Detect → PPE Classify → Zone Check → Track → Alert → Dashboard
+Video Input → YOLO26 Detect → PPE Classify → Zone Check → Track → Alert → Dashboard
 ```
 
 ## Architecture
@@ -13,7 +15,7 @@ Video Input → YOLO Detect → PPE Classify → Zone Check → Track → Alert 
 ```mermaid
 graph LR
     A[Video Feed] --> B[OpenCV Decode]
-    B --> C[YOLO11 Detection]
+    B --> C[YOLO26 Detection]
     C --> D[PPE Heuristic Classifier]
     D --> E[Shapely Zone Engine]
     E --> F[Centroid Tracker]
@@ -74,7 +76,7 @@ Or use the convenience script:
 ### Detection Pipeline
 
 1. **Frame Decode** — OpenCV reads video frames, skipping every Nth frame for performance
-2. **YOLO Detection** — YOLO11n identifies persons, vehicles, and equipment in each frame
+2. **YOLO Detection** — YOLO26n identifies persons, vehicles, and equipment in each frame
 3. **PPE Classification** — Upper 30% of each person bounding box is cropped, converted to HSV, and analyzed for hardhat colors (yellow, orange, white, red) via histogram thresholding
 4. **Zone Checking** — Shapely polygons test whether worker centroids fall within defined hazard/restricted zones
 5. **Object Tracking** — Centroid-based tracker maintains identity across frames using scipy distance matrices
@@ -131,7 +133,7 @@ No YOLO model or GPU needed — works on any machine.
 
 | Layer | Technology |
 |-------|-----------|
-| Detection | YOLO11 via Ultralytics, OpenCV |
+| Detection | YOLO26 via Ultralytics, OpenCV |
 | Backend | Python 3.11, FastAPI, aiosqlite |
 | Tracking | scipy, Shapely |
 | Frontend | React 18, Vite, Tailwind CSS |

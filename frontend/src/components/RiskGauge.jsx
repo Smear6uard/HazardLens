@@ -18,8 +18,9 @@ export default function RiskGauge({ score = 0 }) {
   const circumference = Math.PI * radius;
   const offset = circumference - (clamped / 100) * circumference;
 
-  // Needle angle: -180 (left) to 0 (right)
-  const needleAngle = -180 + (clamped / 100) * 180;
+  // Needle angle: 0 (left/low) to 180 (right/high)
+  // SVG rotate is clockwise, so 0° = left, 90° = up, 180° = right
+  const needleAngle = (clamped / 100) * 180;
 
   return (
     <div className="flex flex-col items-center">

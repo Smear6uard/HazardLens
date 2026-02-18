@@ -62,13 +62,14 @@ class AnalyticsEngine:
         # 40% PPE non-compliance
         ppe_component = (1.0 - compliance_rate) * 40.0
 
-        # 25% zone violations (from recent events)
-        zone_violations = sum(
-            1 for e in recent_events if e.event_type == "zone_entry"
+        # 25% zone violations — count people CURRENTLY inside any zone (ongoing risk)
+        persons_in_zones = sum(
+            1 for o in tracked_objects
+            if o.class_name == ObjectClass.PERSON and len(o.in_zones) > 0
         )
-        zone_component = min(zone_violations * 8.0, 25.0)
+        zone_component = min(persons_in_zones * 8.0, 25.0)
 
-        # 25% near-misses
+        # 25% near-misses (from recent frame events + short memory)
         near_misses = sum(
             1 for e in recent_events if e.event_type == "near_miss"
         )

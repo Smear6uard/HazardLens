@@ -10,12 +10,12 @@ export default function ZoneManager({ zones = [], onDeleteZone, onToggleDrawing,
     setDeleting(zoneId);
     try {
       await apiDeleteZone(zoneId);
-      onDeleteZone?.(zoneId);
     } catch {
-      // silently fail
-    } finally {
-      setDeleting(null);
+      // Backend may have already removed it, or ID mismatch — continue anyway
     }
+    // Always remove from frontend regardless of API result
+    onDeleteZone?.(zoneId);
+    setDeleting(null);
   }
 
   return (
@@ -50,7 +50,7 @@ export default function ZoneManager({ zones = [], onDeleteZone, onToggleDrawing,
           </div>
         ) : (
           zones.map((zone) => {
-            const typeInfo = ZONE_TYPES.find((t) => t.value === zone.type) || ZONE_TYPES[0];
+            const typeInfo = ZONE_TYPES.find((t) => t.value === (zone.type || zone.zone_type)) || ZONE_TYPES[0];
             return (
               <div
                 key={zone.id}
