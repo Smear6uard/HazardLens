@@ -4,7 +4,7 @@
 
 HazardLens monitors video feeds from construction sites to detect PPE compliance, hazard zone violations, near-miss incidents, and unsafe worker behavior — then surfaces actionable alerts on a live dashboard.
 
-[**Watch the Demo**](https://github.com/Smear6uard/HazardLens/issues/2)
+[**Watch the Demo**](https://github.com/Smear6uard/HazardLens/issues/4)
 
 ```
 Video Input → YOLO26 Detect → PPE Classify → Zone Check → Track → Alert → Dashboard
